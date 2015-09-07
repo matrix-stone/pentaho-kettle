@@ -23,11 +23,13 @@
 
 package org.pentaho.di.ui.spoon;
 
+import java.awt.Desktop;
 import java.beans.PropertyChangeListener;
 import java.beans.PropertyChangeSupport;
 import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
+import java.io.IOException;
 import java.lang.reflect.Method;
 import java.net.MalformedURLException;
 import java.net.URL;
@@ -193,7 +195,6 @@ import org.pentaho.di.i18n.BaseMessages;
 import org.pentaho.di.imp.ImportRules;
 import org.pentaho.di.job.Job;
 import org.pentaho.di.job.JobExecutionConfiguration;
-import org.pentaho.di.job.JobHopMeta;
 import org.pentaho.di.job.JobMeta;
 import org.pentaho.di.job.entries.job.JobEntryJob;
 import org.pentaho.di.job.entries.trans.JobEntryTrans;
@@ -426,6 +427,8 @@ public class Spoon extends ApplicationWindow implements AddUndoPositionInterface
 
   // THE HANDLERS
   public SpoonDelegates delegates = new SpoonDelegates( this );
+  
+  private SharedObjectSyncUtil sharedObjectSyncUtil = new SharedObjectSyncUtil( delegates );
 
   public RowMetaAndData variables = new RowMetaAndData( new RowMeta() );
 
@@ -690,7 +693,7 @@ public class Spoon extends ApplicationWindow implements AddUndoPositionInterface
       }
     }
   }
-
+  
   public Spoon() {
     this( null );
   }
@@ -1729,8 +1732,16 @@ public class Spoon extends ApplicationWindow implements AddUndoPositionInterface
         // see if we can find the welcome file on the file system
         File file = new File( FILE_DOCUMENT_MAP );
         if ( file.exists() ) {
-          // ./docs/English/tips/index.htm
-          addSpoonBrowser( STRING_DOCUMENT_TAB_NAME, file.toURI().toURL().toString(), listener );
+          if ( Desktop.isDesktopSupported() ) {
+            // ./docs/English/tips/index.htm
+            try {
+              Desktop.getDesktop().open( file );
+            } catch ( IOException e ) {
+              log.logError( Const.getStackTracker( e ) );
+            }
+          } else {
+            addSpoonBrowser( STRING_DOCUMENT_TAB_NAME, file.toURI().toURL().toString(), listener );
+          }
         }
       }
     } catch ( MalformedURLException e1 ) {
@@ -2666,6 +2677,7 @@ public class Spoon extends ApplicationWindow implements AddUndoPositionInterface
 
     final DatabaseMeta databaseMeta = (DatabaseMeta) selectionObject;
     delegates.db.editConnection( databaseMeta );
+    sharedObjectSyncUtil.synchronizeConnections( databaseMeta );
   }
 
   public void dupeConnection() {
@@ -2782,6 +2794,7 @@ public class Spoon extends ApplicationWindow implements AddUndoPositionInterface
     final TransMeta transMeta = (TransMeta) selectionObjectParent;
     final StepMeta stepMeta = (StepMeta) selectionObject;
     delegates.steps.editStep( transMeta, stepMeta );
+    sharedObjectSyncUtil.synchronizeSteps( stepMeta );
   }
 
   public void dupeStep() {
@@ -3078,10 +3091,14 @@ public class Spoon extends ApplicationWindow implements AddUndoPositionInterface
         // newStep( getActiveTransformation() );
       }
       if ( selection instanceof DatabaseMeta ) {
-        delegates.db.editConnection( (DatabaseMeta) selection );
+        DatabaseMeta database = (DatabaseMeta) selection;
+        delegates.db.editConnection( database );
+        sharedObjectSyncUtil.synchronizeConnections( database );
       }
       if ( selection instanceof StepMeta ) {
-        delegates.steps.editStep( (TransMeta) parent, (StepMeta) selection );
+        StepMeta step = (StepMeta) selection;
+        delegates.steps.editStep( (TransMeta) parent, step );
+        sharedObjectSyncUtil.synchronizeSteps( step );
       }
       if ( selection instanceof JobEntryCopy ) {
         editJobEntry( (JobMeta) parent, (JobEntryCopy) selection );
@@ -3116,6 +3133,7 @@ public class Spoon extends ApplicationWindow implements AddUndoPositionInterface
     if ( dialog.open() ) {
       refreshTree();
       refreshGraph();
+      sharedObjectSyncUtil.synchronizeSlaveServers( slaveServer );
     }
   }
 
@@ -3604,7 +3622,7 @@ public class Spoon extends ApplicationWindow implements AddUndoPositionInterface
     boolean ok = true;
 
     if ( transMeta.hasLoop( newHop.getFromStep() ) || transMeta.hasLoop( newHop.getToStep() ) ) {
-      MessageBox mb = new MessageBox( shell, SWT.YES | SWT.ICON_WARNING );
+      MessageBox mb = new MessageBox( shell, SWT.OK | SWT.ICON_ERROR );
       mb.setMessage( BaseMessages.getString( PKG, "TransGraph.Dialog.HopCausesLoop.Message" ) );
       mb.setText( BaseMessages.getString( PKG, "TransGraph.Dialog.HopCausesLoop.Title" ) );
       mb.open();
@@ -4512,86 +4530,94 @@ public class Spoon extends ApplicationWindow implements AddUndoPositionInterface
   }
 
   public void openFile( String filename, boolean importfile ) {
+    // Open the XML and see what's in there.
+    // We expect a single <transformation> or <job> root at this time...
+
+    boolean loaded = false;
+    FileListener listener = null;
+    Node root = null;
+    // match by extension first
+    int idx = filename.lastIndexOf( '.' );
+    if ( idx != -1 ) {
+      for ( FileListener li : fileListeners ) {
+        if ( li.accepts( filename ) ) {
+          listener = li;
+          break;
+        }
+      }
+    }
+
+    // Attempt to find a root XML node name. Fails gracefully for non-XML file
+    // types.
     try {
-      // Open the XML and see what's in there.
-      // We expect a single <transformation> or <job> root at this time...
+      Document document = XMLHandler.loadXMLFile( filename );
+      root = document.getDocumentElement();
+    } catch ( KettleXMLException e ) {
+      if ( log.isDetailed() ) {
+        log.logDetailed( BaseMessages.getString( PKG, "Spoon.File.Xml.Parse.Error" ) );
+      }
+    }
 
-      boolean loaded = false;
-      FileListener listener = null;
-      Node root = null;
-      // match by extension first
-      int idx = filename.lastIndexOf( '.' );
-      if ( idx != -1 ) {
-        for ( FileListener li : fileListeners ) {
-          if ( li.accepts( filename ) ) {
-            listener = li;
-            break;
-          }
+    // otherwise try by looking at the root node if we were able to parse file
+    // as XML
+    if ( listener == null && root != null ) {
+      for ( FileListener li : fileListeners ) {
+        if ( li.acceptsXml( root.getNodeName() ) ) {
+          listener = li;
+          break;
         }
       }
+    }
 
-      // Attempt to find a root XML node name. Fails gracefully for non-XML file
-      // types.
-      try {
-        Document document = XMLHandler.loadXMLFile( filename );
-        root = document.getDocumentElement();
-      } catch ( KettleXMLException e ) {
-        if ( log.isDetailed() ) {
-          log.logDetailed( BaseMessages.getString( PKG, "Spoon.File.Xml.Parse.Error" ) );
-        }
-      }
-
-      // otherwise try by looking at the root node if we were able to parse file
-      // as XML
-      if ( listener == null && root != null ) {
-        for ( FileListener li : fileListeners ) {
-          if ( li.acceptsXml( root.getNodeName() ) ) {
-            listener = li;
-            break;
-          }
-        }
-      }
-
-      // You got to have a file name!
-      //
-      if ( !Const.isEmpty( filename ) ) {
-
-        if ( listener != null ) {
+    // You got to have a file name!
+    //
+    if ( !Const.isEmpty( filename ) ) {
+      if ( listener != null ) {
+        try {
           loaded = listener.open( root, filename, importfile );
-        }
-        if ( !loaded ) {
-          // Give error back
-          hideSplash();
-          MessageBox mb = new MessageBox( shell, SWT.OK | SWT.ICON_ERROR );
-          mb.setMessage( BaseMessages.getString( PKG, "Spoon.UnknownFileType.Message", filename ) );
-          mb.setText( BaseMessages.getString( PKG, "Spoon.UnknownFileType.Title" ) );
-          mb.open();
-        } else {
-          applyVariables(); // set variables in the newly loaded
-          // transformation(s) and job(s).
+        } catch ( KettleMissingPluginsException e ) {
+          log.logError( e.getMessage(), e );
         }
       }
-    } catch ( KettleMissingPluginsException e ) {
-      // There are missing plugins, let's try to handle them in the marketplace...
-      //
-      if ( marketPluginIsAvailable() ) {
-        handleMissingPluginsExceptionWithMarketplace( e );
+      if ( !loaded ) {
+        // Give error back
+        hideSplash();
+        MessageBox mb = new MessageBox( shell, SWT.OK | SWT.ICON_ERROR );
+        mb.setMessage( BaseMessages.getString( PKG, "Spoon.UnknownFileType.Message", filename ) );
+        mb.setText( BaseMessages.getString( PKG, "Spoon.UnknownFileType.Title" ) );
+        mb.open();
+      } else {
+        applyVariables(); // set variables in the newly loaded
+        // transformation(s) and job(s).
       }
     }
   }
 
   /**
-   * Check to see if the market plugin is available.
-   *
-   * @return true if the market plugin is installed and ready, false if it is not.
+   * The method which can open the marketplace.
    */
-  private boolean marketPluginIsAvailable() {
-    PluginInterface marketPlugin = findMarketPlugin();
-    return marketPlugin != null;
+  private Method marketplaceMethod = null;
+
+  /**
+   * Set the method which can open the marketplace.
+   */
+  public void setMarketMethod( Method m ) {
+    marketplaceMethod = m;
   }
 
-  private PluginInterface findMarketPlugin() {
-    return PluginRegistry.getInstance().findPluginWithId( SpoonPluginType.class, "market" );
+  /**
+   * If available, this method will open the marketplace.
+   */
+  public void openMarketplace() {
+    try {
+      if ( marketplaceMethod != null ) {
+        marketplaceMethod.invoke( marketplaceMethod.getDeclaringClass().newInstance() );
+      }
+    } catch ( Exception ex ) {
+      new ErrorDialog(
+        shell, BaseMessages.getString( PKG, "Spoon.ErrorShowingMarketplaceDialog.Title" ), BaseMessages
+          .getString( PKG, "Spoon.ErrorShowingMarketplaceDialog.Message" ), ex );
+    }
   }
 
   /**
@@ -4601,27 +4627,15 @@ public class Spoon extends ApplicationWindow implements AddUndoPositionInterface
    *          The missing plugins exception
    */
   public void handleMissingPluginsExceptionWithMarketplace( KettleMissingPluginsException missingPluginsException ) {
-    try {
-      hideSplash();
-      MessageBox box = new MessageBox( shell, SWT.ICON_QUESTION | SWT.YES | SWT.NO );
-      box.setText( BaseMessages.getString( PKG, "Spoon.MissingPluginsFoundDialog.Title" ) );
-      box.setMessage( BaseMessages.getString(
-        PKG, "Spoon.MissingPluginsFoundDialog.Message", Const.CR, missingPluginsException.getPluginsMessage() ) );
-      int answer = box.open();
-      if ( ( answer & SWT.YES ) != 0 ) {
-        String controllerClassName = "org.pentaho.di.ui.spoon.dialog.MarketplaceController";
-        PluginInterface marketPlugin = findMarketPlugin();
-        ClassLoader classLoader = PluginRegistry.getInstance().getClassLoader( marketPlugin );
-        Class<?> controllerClass = classLoader.loadClass( controllerClassName );
-        Method method = controllerClass.getMethod( "showMarketPlaceDialog" );
-        method.invoke( null );
-      }
-    } catch ( Exception ex ) {
-      new ErrorDialog(
-        shell, BaseMessages.getString( PKG, "Spoon.ErrorShowingMarketplaceDialog.Title" ), BaseMessages
-          .getString( PKG, "Spoon.ErrorShowingMarketplaceDialog.Message" ), ex );
+    hideSplash();
+    MessageBox box = new MessageBox( shell, SWT.ICON_QUESTION | SWT.YES | SWT.NO );
+    box.setText( BaseMessages.getString( PKG, "Spoon.MissingPluginsFoundDialog.Title" ) );
+    box.setMessage( BaseMessages.getString(
+      PKG, "Spoon.MissingPluginsFoundDialog.Message", Const.CR, missingPluginsException.getPluginsMessage() ) );
+    int answer = box.open();
+    if ( ( answer & SWT.YES ) != 0 ) {
+      openMarketplace();
     }
-
   }
 
   public PropsUI getProperties() {
@@ -4927,8 +4941,17 @@ public class Spoon extends ApplicationWindow implements AddUndoPositionInterface
   public boolean saveFile() {
     try {
       EngineMetaInterface meta = getActiveMeta();
-      if ( meta != null ) {
-        return saveToFile( meta );
+      if ( meta != null && AbstractMeta.class.isAssignableFrom( meta.getClass() ) ) {
+        if ( ( (AbstractMeta) meta ).hasMissingPlugins() ) {
+          MessageBox mb = new MessageBox( shell, SWT.OK | SWT.ICON_ERROR );
+          mb.setMessage( BaseMessages.getString( PKG, "Spoon.ErrorDialog.MissingPlugin.Error" ) );
+          mb.setText( BaseMessages.getString( PKG, "Spoon.ErrorDialog.MissingPlugin.Title" ) );
+          mb.open();
+          return false;
+        }
+        if ( meta != null ) {
+          return saveToFile( meta );
+        }
       }
     } catch ( Exception e ) {
       KettleRepositoryLostException krle = KettleRepositoryLostException.lookupStackStrace( e );
@@ -5227,6 +5250,15 @@ public class Spoon extends ApplicationWindow implements AddUndoPositionInterface
   public boolean saveFileAs() throws KettleException {
     try {
       EngineMetaInterface meta = getActiveMeta();
+      if ( meta != null && AbstractMeta.class.isAssignableFrom( meta.getClass() ) ) {
+        if ( ( (AbstractMeta) meta ).hasMissingPlugins() ) {
+          MessageBox mb = new MessageBox( shell, SWT.OK | SWT.ICON_ERROR );
+          mb.setMessage( BaseMessages.getString( PKG, "Spoon.ErrorDialog.MissingPlugin.Error" ) );
+          mb.setText( BaseMessages.getString( PKG, "Spoon.ErrorDialog.MissingPlugin.Title" ) );
+          mb.open();
+          return false;
+        }
+      }
       if ( meta != null ) {
         if ( meta.canSave() ) {
           return saveFileAs( meta );
@@ -6220,6 +6252,9 @@ public class Spoon extends ApplicationWindow implements AddUndoPositionInterface
     // Put the steps below it.
     for ( int i = 0; i < meta.nrSteps(); i++ ) {
       StepMeta stepMeta = meta.getStep( i );
+      if ( stepMeta.isMissing() ) {
+        continue;
+      }
       PluginInterface stepPlugin =
         PluginRegistry.getInstance().findPluginWithId( StepPluginType.class, stepMeta.getStepID() );
 
@@ -7857,10 +7892,6 @@ public class Spoon extends ApplicationWindow implements AddUndoPositionInterface
     //
     handleStartOptions( options );
 
-    // Load the last loaded files
-    //
-    loadLastUsedFiles();
-
     // Enable menus based on whether user was able to login or not
     //
     enableMenus();
@@ -8290,6 +8321,7 @@ public class Spoon extends ApplicationWindow implements AddUndoPositionInterface
       new PartitionSchemaDialog( shell, partitionSchema, transMeta.getDatabases(), transMeta );
     if ( dialog.open() ) {
       refreshTree();
+      sharedObjectSyncUtil.synchronizePartitionSchemas( partitionSchema );
     }
   }
 
@@ -8322,6 +8354,7 @@ public class Spoon extends ApplicationWindow implements AddUndoPositionInterface
     ClusterSchemaDialog dialog = new ClusterSchemaDialog( shell, clusterSchema, transMeta.getSlaveServers() );
     if ( dialog.open() ) {
       refreshTree();
+      sharedObjectSyncUtil.synchronizeClusterSchemas( clusterSchema );
     }
   }
 
@@ -8674,7 +8707,9 @@ public class Spoon extends ApplicationWindow implements AddUndoPositionInterface
   }
 
   public String editStep( TransMeta transMeta, StepMeta stepMeta ) {
-    return delegates.steps.editStep( transMeta, stepMeta );
+    String stepname = delegates.steps.editStep( transMeta, stepMeta );
+    sharedObjectSyncUtil.synchronizeSteps( stepMeta );
+    return stepname;
   }
 
   public void dupeStep( TransMeta transMeta, StepMeta stepMeta ) {
@@ -9156,6 +9191,8 @@ public class Spoon extends ApplicationWindow implements AddUndoPositionInterface
     setBlockOnOpen( false );
     try {
       open();
+      // Load the last loaded files
+      loadLastUsedFiles();
       waitForDispose();
       // runEventLoop2(getShell());
     } catch ( Throwable e ) {

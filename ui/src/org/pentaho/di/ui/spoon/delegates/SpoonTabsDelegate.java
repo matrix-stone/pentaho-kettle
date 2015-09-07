@@ -32,6 +32,7 @@ import org.eclipse.swt.browser.OpenWindowListener;
 import org.eclipse.swt.browser.WindowEvent;
 import org.eclipse.swt.custom.CTabFolder;
 import org.eclipse.swt.widgets.Composite;
+import org.pentaho.di.base.AbstractMeta;
 import org.pentaho.di.cluster.SlaveServer;
 import org.pentaho.di.core.Const;
 import org.pentaho.di.core.EngineMetaInterface;
@@ -81,20 +82,26 @@ public class SpoonTabsDelegate extends SpoonDelegate {
             RepositoryOperation.MODIFY_TRANSFORMATION, RepositoryOperation.MODIFY_JOB );
 
     boolean close = true;
+    boolean canSave = true;
     for ( TabMapEntry entry : collection ) {
       if ( item.equals( entry.getTabItem() ) ) {
         TabItemInterface itemInterface = entry.getObject();
-
-        // Can we close this tab? Only allow users with create content perms to save
-        if ( !itemInterface.canBeClosed() && createPerms ) {
-          int reply = itemInterface.showChangedWarning();
-          if ( reply == SWT.YES ) {
-            close = itemInterface.applyChanges();
-          } else {
-            if ( reply == SWT.CANCEL ) {
-              close = false;
+        if ( itemInterface.getManagedObject() != null
+            && AbstractMeta.class.isAssignableFrom( itemInterface.getManagedObject().getClass() ) ) {
+          canSave = !( (AbstractMeta) itemInterface.getManagedObject() ).hasMissingPlugins();
+        }
+        if ( canSave ) {
+          // Can we close this tab? Only allow users with create content perms to save
+          if ( !itemInterface.canBeClosed() && createPerms ) {
+            int reply = itemInterface.showChangedWarning();
+            if ( reply == SWT.YES ) {
+              close = itemInterface.applyChanges();
             } else {
-              close = true;
+              if ( reply == SWT.CANCEL ) {
+                close = false;
+              } else {
+                close = true;
+              }
             }
           }
         }

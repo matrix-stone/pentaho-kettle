@@ -732,6 +732,7 @@
       <test todir="${testreports.xml.dir}" name="org.pentaho.di.trans.steps.combinationlookup.CombinationLookupTest"
             haltonerror="false"/>
       <test todir="${testreports.xml.dir}" name="org.pentaho.di.trans.steps.constant.ConstantTest" haltonerror="false"/>
+      <test todir="${testreports.xml.dir}" name="org.pentaho.di.trans.steps.cubeinput.CubeInputStepIntTest" haltonerror="false"/>
       <test todir="${testreports.xml.dir}" name="org.pentaho.di.trans.steps.calculator.CalculatorTest"
             haltonerror="false"/>
       <test todir="${testreports.xml.dir}" name="org.pentaho.di.trans.steps.csvinput.CsvInput1Test"
@@ -811,12 +812,15 @@
             haltonerror="false"/>
       <test todir="${testreports.xml.dir}" name="org.pentaho.di.trans.steps.splitfieldtorows.SplitFieldToRowsTest"
             haltonerror="false"/>
+      <test todir="${testreports.xml.dir}" name="org.pentaho.di.trans.steps.xsdvalidator.XsdValidatorIntTest" haltonerror="false"/>
       <test todir="${testreports.xml.dir}" name="org.pentaho.di.trans.steps.xslt.XsltTest" haltonerror="false"/>
       <test todir="${testreports.xml.dir}" name="org.pentaho.di.core.database.SequenceMetaTests" haltonerror="false"/>
       <test todir="${testreports.xml.dir}" name="org.pentaho.di.trans.steps.terafast.FastloadControlBuilderTest"
             haltonerror="false"/>
       <test todir="${testreports.xml.dir}" name="org.pentaho.di.trans.steps.gpload.GPLoadTest"
             haltonerror="false"/>
+    	<test todir="${testreports.xml.dir}" name="org.pentaho.di.trans.steps.rest.RestInputTest"
+    	            haltonerror="false"/>
     </junit>
     <junitreport todir="${testreports.html.dir}">
       <fileset dir="${testreports.xml.dir}">

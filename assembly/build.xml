@@ -26,16 +26,13 @@
 
   <import file="build-res/subfloor-pkg.xml" />
 	
-	
-  <property name="pdf.docs.dir" value="${approot.stage.dir}/docs/English" />
-
-  <target name="dist" depends="init,resolve,resolve-swtlibs,resolve-launcher,resolve-plugins,resolve-pentaho-system,package" description="Builds and packages the application"/>
+  <target name="dist" depends="init,resolve,resolve-swtlibs,resolve-launcher,resolve-plugins,resolve-dataservice-jdbc,resolve-pentaho-system,package" description="Builds and packages the application"/>
   	
-  <target name="assemble-full" depends="init,resolve-all,assemble-plugins,assemble" description="Builds the application" />
+  <target name="assemble-full" depends="init,resolve-all,assemble-plugins,assemble,assemble-dataservice-jdbc" description="Builds the application" />
 	
   <target name="assemble-no-plugins" depends="init,resolve-all,assemble" description="Builds the application" />
 
-  <target name="resolve-all" depends="init,resolve,resolve-swtlibs,resolve-launcher,resolve-plugins,resolve-pentaho-system"/>
+  <target name="resolve-all" depends="init,resolve,resolve-swtlibs,resolve-launcher,resolve-plugins,resolve-dataservice-jdbc,resolve-pentaho-system"/>
 
   <property name="system.dir" value="${stage.dir}/${package.root.dir}/system" />
 
@@ -57,14 +54,6 @@
   </target>
 
   <!-- - - - - - - - - - - - - - - - - - 
-    target: resolve-pdf-docs
-  - - - - - - - - - - - - - - - - - -->
-  <target name="resolve-pdf-docs" depends="install-ivy">
-    <ivy:resolve file="${ivyfile}" conf="pdf-docs" />
-    <ivy:retrieve conf="pdf-docs" pattern="${pdf.docs.dir}/[module].[ext]" />
-  </target>
-	
-  <!-- - - - - - - - - - - - - - - - - - 
 	target: resolve-oss-licenses
   - - - - - - - - - - - - - - - - - -->
   <target name="resolve-oss-licenses" depends="install-ivy">
@@ -72,11 +61,12 @@
      <ivy:retrieve conf="oss-licenses" pattern="${bin.dir}/[module].[ext]" />
   </target>
 	
-  <target name="assemble" depends="resolve-swtlibs,resolve-pdf-docs,resolve-oss-licenses,create-sampledb-from-sql,subfloor-pkg.assemble"
+  <target name="assemble" depends="resolve-swtlibs,resolve-oss-licenses,create-sampledb-from-sql,subfloor-pkg.assemble"
           description="copy jar files to distribution directory">
     <echo>Construct the distribution package...</echo>
     <!-- make JavaApplicationStub executable for OSX -->
     <chmod file="${approot.stage.dir}/Data Integration.app/Contents/MacOS/JavaApplicationStub" perm="ugo+rx"/>
+    <chmod file="${approot.stage.dir}/Data Integration.app/Contents/MacOS/universalJavaApplicationStub" perm="ugo+rx"/>
   	<!-- insert version info into the canned info.plist -->
   	<replace file = "${approot.stage.dir}/Data Integration.app/Contents/Info.plist" token="@KETTLE_VERSION_STRING@" value="${dependency.kettle.revision}" />
   	<!-- Remove the SWT JAR used for compilation -->
@@ -129,7 +119,14 @@
     
     <delete dir="${plugins.dir}"/>
   </target>
-	
+
+  <target name="assemble-dataservice-jdbc" depends="install-antcontrib,resolve-dataservice-jdbc" >
+
+    <copy todir="${stage.dir}/${package.root.dir}/Data Service JDBC Driver">
+      <fileset dir="${dataservice-jdbc.dir}" />
+    </copy>
+    <delete dir="${dataservice-jdbc.dir}"/>
+  </target>
 	
 	<!--=======================================================================
 	      publish-local
@@ -211,6 +208,12 @@
     <ivy:retrieve conf="plugins" pattern="${plugins.dir}/[module]-[revision](-[classifier]).[ext]" sync="true" />
   </target>
 
+  <target name="resolve-dataservice-jdbc" depends="install-ivy">
+    <ivy:resolve file="${ivyfile}" conf="dataservice-jdbc" />
+    <ivy:retrieve conf="dataservice-jdbc" pattern="${dataservice-jdbc.dir}/[module]-[revision](-[classifier]).[ext]" sync="true" />
+  </target>
+
+  
   <target name="unzip-swtlibs">
 	<!-- Unzip the libswt package into the libswt folder of the distribution -->
     <unzip dest="${approot.stage.dir}" overwrite="true">

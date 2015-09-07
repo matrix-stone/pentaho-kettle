@@ -26,12 +26,17 @@ import java.util.Locale;
 
 import org.pentaho.di.core.EngineMetaInterface;
 import org.pentaho.di.core.LastUsedFile;
+import org.pentaho.di.core.ObjectLocationSpecificationMethod;
 import org.pentaho.di.core.exception.KettleException;
 import org.pentaho.di.core.extension.ExtensionPointHandler;
 import org.pentaho.di.core.extension.KettleExtensionPoint;
 import org.pentaho.di.i18n.BaseMessages;
 import org.pentaho.di.job.JobMeta;
+import org.pentaho.di.job.entries.job.JobEntryJob;
+import org.pentaho.di.job.entries.trans.JobEntryTrans;
+import org.pentaho.di.job.entry.JobEntryCopy;
 import org.pentaho.di.ui.core.dialog.ErrorDialog;
+import org.pentaho.di.ui.job.entries.missing.MissingEntryDialog;
 import org.w3c.dom.Node;
 
 public class JobFileListener implements FileListener {
@@ -46,15 +51,30 @@ public class JobFileListener implements FileListener {
 
       JobMeta jobMeta = new JobMeta();
       jobMeta.loadXML( jobNode, fname, spoon.getRepository(), spoon.getMetaStore(), false, spoon );
+      if( jobMeta.hasMissingPlugins() ) {
+        MissingEntryDialog missingDialog = new MissingEntryDialog( spoon.getShell(), jobMeta.getMissingEntries() );
+        if( missingDialog.open() == null ) {
+          return true;
+        }
+      }
       jobMeta.setRepositoryDirectory( spoon.getDefaultSaveLocation( jobMeta ) );
       jobMeta.setRepository( spoon.getRepository() );
       jobMeta.setMetaStore( spoon.getMetaStore() );
       spoon.setJobMetaVariables( jobMeta );
       spoon.getProperties().addLastFile( LastUsedFile.FILE_TYPE_JOB, fname, null, false, null );
       spoon.addMenuLast();
-      if ( !importfile ) {
+      
+      // If we are importing into a repository we need to fix 
+      // up the references to other jobs and transformations
+      // if any exist.
+      if ( importfile ) {
+        if ( spoon.getRepository() != null ) {
+          jobMeta = fixLinks( jobMeta );
+        }
+      } else {
         jobMeta.clearChanged();
       }
+      
       jobMeta.setFilename( fname );
       spoon.delegates.jobs.addJobGraph( jobMeta );
 
@@ -64,7 +84,6 @@ public class JobFileListener implements FileListener {
       spoon.refreshTree();
       SpoonPerspectiveManager.getInstance().activatePerspective( MainSpoonPerspective.class );
       return true;
-
     } catch ( KettleException e ) {
       new ErrorDialog(
         spoon.getShell(), BaseMessages.getString( PKG, "Spoon.Dialog.ErrorOpening.Title" ), BaseMessages
@@ -72,6 +91,47 @@ public class JobFileListener implements FileListener {
           + fname, e );
     }
     return false;
+  }
+
+  private JobMeta fixLinks( JobMeta jobMeta ) {
+    jobMeta = processLinkedJobs( jobMeta );
+    jobMeta = processLinkedTrans( jobMeta );
+    
+    return jobMeta;
+  }
+
+  private JobMeta processLinkedJobs( JobMeta jobMeta ) {
+    for ( int i=0; i<jobMeta.nrJobEntries(); i++ ) {
+      JobEntryCopy jec = jobMeta.getJobEntry( i );
+      if (jec.getEntry() instanceof JobEntryJob) {
+        JobEntryJob jej = (JobEntryJob) jec.getEntry();
+        jej.setSpecificationMethod( ObjectLocationSpecificationMethod.REPOSITORY_BY_NAME );
+        String filename = jej.getFilename();
+        String jobname = filename.substring( filename.lastIndexOf( "/" ) + 1, filename.lastIndexOf( '.' ) );
+        String directory = filename.substring( 0, filename.lastIndexOf( "/" ) );
+        jej.setJobName( jobname );
+        jej.setDirectory( directory );
+        jobMeta.setJobEntry( i, jec );
+      }
+    }
+    return jobMeta;
+  }
+
+  private JobMeta processLinkedTrans( JobMeta jobMeta ) {
+    for ( int i=0; i<jobMeta.nrJobEntries(); i++ ) {
+      JobEntryCopy jec = jobMeta.getJobEntry( i );
+      if (jec.getEntry() instanceof JobEntryTrans) {
+        JobEntryTrans jet = (JobEntryTrans) jec.getEntry();
+        jet.setSpecificationMethod( ObjectLocationSpecificationMethod.REPOSITORY_BY_NAME );
+        String filename = jet.getFilename();
+        String jobname = filename.substring( filename.lastIndexOf( "/" ) + 1, filename.lastIndexOf( '.' ) );
+        String directory = filename.substring( 0, filename.lastIndexOf( "/" ) );
+        jet.setTransname( jobname );
+        jet.setDirectory( directory );
+        jobMeta.setJobEntry( i, jec );
+      }
+    }
+    return jobMeta;
   }
 
   public boolean save( EngineMetaInterface meta, String fname, boolean export ) {

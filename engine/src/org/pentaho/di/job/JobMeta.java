@@ -26,6 +26,7 @@ package org.pentaho.di.job;
 import java.io.InputStream;
 import java.util.ArrayList;
 import java.util.Collection;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.List;
 import java.util.Map;
@@ -78,6 +79,7 @@ import org.pentaho.di.core.vfs.KettleVFS;
 import org.pentaho.di.core.xml.XMLHandler;
 import org.pentaho.di.core.xml.XMLInterface;
 import org.pentaho.di.i18n.BaseMessages;
+import org.pentaho.di.job.entries.missing.MissingEntry;
 import org.pentaho.di.job.entries.special.JobEntrySpecial;
 import org.pentaho.di.job.entry.JobEntryCopy;
 import org.pentaho.di.job.entry.JobEntryInterface;
@@ -152,6 +154,9 @@ public class JobMeta extends AbstractMeta implements Cloneable, Comparable<JobMe
   /** Constant = "ERROR" **/
   public static final String STRING_SPECIAL_ERROR = "ERROR";
 
+  /** The loop cache. */
+  protected Map<String, Boolean> loopCache;
+
   /**
    * List of booleans indicating whether or not to remember the size and position of the different windows...
    */
@@ -160,6 +165,8 @@ public class JobMeta extends AbstractMeta implements Cloneable, Comparable<JobMe
   protected boolean batchIdPassed;
 
   protected static final String XML_TAG_PARAMETERS = "parameters";
+  
+  private List<MissingEntry> missingEntries;
 
   /**
    * Instantiates a new job meta.
@@ -199,6 +206,7 @@ public class JobMeta extends AbstractMeta implements Cloneable, Comparable<JobMe
     arguments = null;
 
     super.clear();
+    loopCache = new HashMap<String, Boolean>();
     addDefaults();
     jobStatus = -1;
     jobVersion = null;
@@ -1114,6 +1122,10 @@ public class JobMeta extends AbstractMeta implements Cloneable, Comparable<JobMe
         // System.out.println("Reading entry:\n"+entrynode);
 
         JobEntryCopy je = new JobEntryCopy( entrynode, databases, slaveServers, rep, metaStore );
+
+        if ( je.isSpecial() && je.isMissing() ) {
+          addMissingEntry( (MissingEntry) je.getEntry() );
+        }
         JobEntryCopy prev = findJobEntry( je.getName(), 0, true );
         if ( prev != null ) {
           // See if the #0 (root entry) already exists!
@@ -1370,7 +1382,12 @@ public class JobMeta extends AbstractMeta implements Cloneable, Comparable<JobMe
    *          the i
    */
   public void removeJobEntry( int i ) {
-    jobcopies.remove( i );
+    JobEntryCopy deleted = jobcopies.remove( i );
+    if ( deleted != null ) {
+      if ( deleted.getEntry() instanceof MissingEntry ) {
+        removeMissingEntry( ( MissingEntry ) deleted.getEntry() );
+      }
+    }
     setChanged();
   }
 
@@ -1382,6 +1399,18 @@ public class JobMeta extends AbstractMeta implements Cloneable, Comparable<JobMe
    */
   public void removeJobHop( int i ) {
     jobhops.remove( i );
+    setChanged();
+  }
+
+  /**
+   * Removes a hop from the transformation. Also marks that the
+   * transformation's hops have changed.
+   *
+   * @param hop
+   *          The hop to remove from the list of hops
+   */
+  public void removeJobHop( JobHopMeta hop ) {
+    jobhops.remove( hop );
     setChanged();
   }
 
@@ -1677,7 +1706,8 @@ public class JobMeta extends AbstractMeta implements Cloneable, Comparable<JobMe
    * @return true, if successful
    */
   public boolean hasLoop( JobEntryCopy entry ) {
-    return hasLoop( entry, null );
+    clearLoopCache();
+    return hasLoop( entry, null, true ) || hasLoop( entry, null, false );
   }
 
   /**
@@ -1689,8 +1719,44 @@ public class JobMeta extends AbstractMeta implements Cloneable, Comparable<JobMe
    *          the lookup
    * @return true, if successful
    */
-  public boolean hasLoop( JobEntryCopy entry, JobEntryCopy lookup ) {
-    return false;
+  public boolean hasLoop( JobEntryCopy entry, JobEntryCopy lookup, boolean info ) {
+    String cacheKey =
+        entry.getName() + " - " + ( lookup != null ? lookup.getName() : "" ) + " - " + ( info ? "true" : "false" );
+
+    Boolean loop = loopCache.get( cacheKey );
+    if ( loop != null ) {
+      return loop.booleanValue();
+    }
+
+    boolean hasLoop = false;
+
+    int nr = findNrPrevJobEntries( entry, info );
+    for ( int i = 0; i < nr && !hasLoop; i++ ) {
+      JobEntryCopy prevJobMeta = findPrevJobEntry( entry, i, info );
+      if ( prevJobMeta != null ) {
+        if ( prevJobMeta.equals( entry ) ) {
+          hasLoop = true;
+          break; // no need to check more but caching this one below
+        } else if ( prevJobMeta.equals( lookup ) ) {
+          hasLoop = true;
+          break; // no need to check more but caching this one below
+        } else if ( hasLoop( prevJobMeta, lookup == null ? entry : lookup, info ) ) {
+          hasLoop = true;
+          break; // no need to check more but caching this one below
+        }
+      }
+    }
+    // Store in the cache...
+    //
+    loopCache.put( cacheKey, Boolean.valueOf( hasLoop ) );
+    return hasLoop;
+  }
+
+  /**
+   * Clears the loop cache.
+   */
+  private void clearLoopCache() {
+    loopCache.clear();
   }
 
   /**
@@ -2421,18 +2487,23 @@ public class JobMeta extends AbstractMeta implements Cloneable, Comparable<JobMe
     setInternalNameKettleVariable( var );
 
     // The name of the directory in the repository
-    var.setVariable( Const.INTERNAL_VARIABLE_JOB_REPOSITORY_DIRECTORY, directory != null
+    variables.setVariable( Const.INTERNAL_VARIABLE_JOB_REPOSITORY_DIRECTORY, directory != null 
       ? directory.getPath() : "" );
 
-    // Undefine the transformation specific variables:
-    // transformations can't run jobs, so if you use these they are 99.99%
-    // wrong.
-    var.setVariable( Const.INTERNAL_VARIABLE_TRANSFORMATION_FILENAME_DIRECTORY, null );
-    var.setVariable( Const.INTERNAL_VARIABLE_TRANSFORMATION_FILENAME_NAME, null );
-    var.setVariable( Const.INTERNAL_VARIABLE_TRANSFORMATION_FILENAME_DIRECTORY, null );
-    var.setVariable( Const.INTERNAL_VARIABLE_TRANSFORMATION_FILENAME_NAME, null );
-    var.setVariable( Const.INTERNAL_VARIABLE_TRANSFORMATION_NAME, null );
-    var.setVariable( Const.INTERNAL_VARIABLE_TRANSFORMATION_REPOSITORY_DIRECTORY, null );
+    boolean hasRepoDir = getRepositoryDirectory() != null && getRepository() != null;
+
+    // setup fallbacks
+    if ( hasRepoDir ) {
+      variables.setVariable( Const.INTERNAL_VARIABLE_JOB_FILENAME_DIRECTORY, 
+          variables.getVariable( Const.INTERNAL_VARIABLE_JOB_REPOSITORY_DIRECTORY ) );
+    } else {
+      variables.setVariable( Const.INTERNAL_VARIABLE_JOB_REPOSITORY_DIRECTORY, 
+          variables.getVariable( Const.INTERNAL_VARIABLE_JOB_FILENAME_DIRECTORY ) );
+    }
+    
+    variables.setVariable( Const.INTERNAL_VARIABLE_ENTRY_CURRENT_DIRECTORY, 
+        variables.getVariable( repository != null ? 
+            Const.INTERNAL_VARIABLE_JOB_REPOSITORY_DIRECTORY : Const.INTERNAL_VARIABLE_JOB_FILENAME_DIRECTORY ) );
   }
 
   /**
@@ -2444,7 +2515,7 @@ public class JobMeta extends AbstractMeta implements Cloneable, Comparable<JobMe
   @Override
   protected void setInternalNameKettleVariable( VariableSpace var ) {
     // The name of the job
-    var.setVariable( Const.INTERNAL_VARIABLE_JOB_NAME, Const.NVL( name, "" ) );
+    variables.setVariable( Const.INTERNAL_VARIABLE_JOB_NAME, Const.NVL( name, "" ) );
   }
 
   /**
@@ -2457,24 +2528,23 @@ public class JobMeta extends AbstractMeta implements Cloneable, Comparable<JobMe
   protected void setInternalFilenameKettleVariables( VariableSpace var ) {
     if ( filename != null ) {
       // we have a filename that's defined.
-
       try {
         FileObject fileObject = KettleVFS.getFileObject( filename, var );
         FileName fileName = fileObject.getName();
 
         // The filename of the job
-        var.setVariable( Const.INTERNAL_VARIABLE_JOB_FILENAME_NAME, fileName.getBaseName() );
+        variables.setVariable( Const.INTERNAL_VARIABLE_JOB_FILENAME_NAME, fileName.getBaseName() );
 
         // The directory of the job
         FileName fileDir = fileName.getParent();
-        var.setVariable( Const.INTERNAL_VARIABLE_JOB_FILENAME_DIRECTORY, fileDir.getURI() );
+        variables.setVariable( Const.INTERNAL_VARIABLE_JOB_FILENAME_DIRECTORY, fileDir.getURI() );
       } catch ( Exception e ) {
-        var.setVariable( Const.INTERNAL_VARIABLE_JOB_FILENAME_DIRECTORY, "" );
-        var.setVariable( Const.INTERNAL_VARIABLE_JOB_FILENAME_NAME, "" );
+        variables.setVariable( Const.INTERNAL_VARIABLE_JOB_FILENAME_DIRECTORY, "" );
+        variables.setVariable( Const.INTERNAL_VARIABLE_JOB_FILENAME_NAME, "" );
       }
     } else {
-      var.setVariable( Const.INTERNAL_VARIABLE_JOB_FILENAME_DIRECTORY, "" );
-      var.setVariable( Const.INTERNAL_VARIABLE_JOB_FILENAME_NAME, "" );
+      variables.setVariable( Const.INTERNAL_VARIABLE_JOB_FILENAME_DIRECTORY, "" );
+      variables.setVariable( Const.INTERNAL_VARIABLE_JOB_FILENAME_NAME, "" );
     }
   }
 
@@ -2860,4 +2930,24 @@ public class JobMeta extends AbstractMeta implements Cloneable, Comparable<JobMe
     return jobcopies.contains( jobCopy );
   }
   
+  public List<MissingEntry> getMissingEntries() {
+    return missingEntries;
+  }
+  
+  public void addMissingEntry( MissingEntry missingEntry ) {
+    if ( missingEntries == null ) {
+      missingEntries = new ArrayList<MissingEntry>();
+    }
+    missingEntries.add( missingEntry );
+  }
+  
+  public void removeMissingEntry( MissingEntry missingEntry ) {
+    if ( missingEntries != null && missingEntry != null && missingEntries.contains( missingEntry ) ) {
+      missingEntries.remove( missingEntry );
+    }
+  }
+  
+  public boolean hasMissingPlugins() {
+    return missingEntries != null && !missingEntries.isEmpty();
+  }
 }
